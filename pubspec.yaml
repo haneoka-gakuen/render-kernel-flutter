@@ -1,0 +1,15 @@
+name: render_kernel_flutter
+description: Resource-driven Flutter GPU drawing, image loading and frame lifecycle.
+version: 0.1.0
+publish_to: none
+repository: https://github.com/haneoka-gakuen/render-kernel-flutter
+environment:
+  sdk: ^3.13.5
+dependencies:
+  render_contracts:
+    path: packages/render_contracts
+  flutter:
+    sdk: flutter
+  flutter_gpu:
+    sdk: flutter
+  vector_math: ^2.2.0

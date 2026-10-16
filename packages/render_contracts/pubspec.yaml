@@ -1,0 +1,7 @@
+name: render_contracts
+description: Numeric geometry, render graph and shader binding contracts.
+version: 0.1.0
+publish_to: none
+repository: https://github.com/haneoka-gakuen/render-kernel-flutter/tree/main/packages/render_contracts
+environment:
+  sdk: ^3.13.5
