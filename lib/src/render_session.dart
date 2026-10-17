@@ -15,10 +15,12 @@ class RenderSession {
   RenderSession({
     required this.renderer,
     required ResourceFetch fetch,
+    TextureDataFetch? textureDataFetch,
     bool reuseDecodedImages = true,
     bool retainDecodedImageMipmaps = true,
   }) : _loader = TextureLoader(
          fetch: fetch,
+         textureDataFetch: textureDataFetch,
          renderer: renderer,
          reuseDecodedImages: reuseDecodedImages,
          retainDecodedImageMipmaps: retainDecodedImageMipmaps,

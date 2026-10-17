@@ -221,13 +221,21 @@ final class GpuFrameRenderer {
         width <= 0 ||
         height <= 0 ||
         rgba.length !=
-            width * height * (format == TargetFormat.rgba16f ? 8 : 4)) {
+            width *
+                height *
+                switch (format) {
+                  TexelFormat.r8 => 1,
+                  TexelFormat.rgba8 => 4,
+                  TexelFormat.rgba16f => 8,
+                }) {
       throw ArgumentError('gpu_texture_data_scope');
     }
     final generation = _resourceGeneration;
-    final pixelFormat = format == TargetFormat.rgba16f
-        ? gpu.PixelFormat.r16g16b16a16Float
-        : gpu.PixelFormat.r8g8b8a8UNormInt;
+    final pixelFormat = switch (format) {
+      TexelFormat.r8 => gpu.PixelFormat.r8UNormInt,
+      TexelFormat.rgba8 => gpu.PixelFormat.r8g8b8a8UNormInt,
+      TexelFormat.rgba16f => gpu.PixelFormat.r16g16b16a16Float,
+    };
     if (!context.supportsTextureFormat(pixelFormat)) {
       throw UnsupportedError('gpu_texture_format_unavailable:$pixelFormat');
     }
@@ -556,6 +564,9 @@ final class GpuFrameRenderer {
     }
     for (final entry in scene.targets.entries) {
       final spec = entry.value;
+      if (spec.format == TexelFormat.r8) {
+        throw UnsupportedError('gpu_r8_sample_only');
+      }
       if (spec.presentable && spec.alpha != TextureAlpha.premultiplied) {
         throw UnsupportedError('gpu_surface_requires_premultiplied');
       }

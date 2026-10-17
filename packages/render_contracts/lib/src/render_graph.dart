@@ -57,7 +57,11 @@ enum SamplerAddress { clampToEdge, repeat, mirror }
 
 enum SamplerFilter { nearest, linear }
 
-enum TargetFormat { rgba8, rgba16f }
+enum TexelFormat { rgba8, rgba16f, r8 }
+
+typedef TargetFormat = TexelFormat;
+
+enum TextureChannel { red, alpha }
 
 enum CoverageMaskMode { hard, soft }
 
