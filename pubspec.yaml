@@ -17,6 +17,9 @@ dependencies:
     sdk: flutter
   vector_math: ^2.2.0
 flutter:
+  assets:
+    - assets/shaders/spatial.shaderbundle
+    - LICENSE-FidelityFX-FSR.txt
   plugin:
     platforms:
       android:

@@ -1,0 +1,14 @@
+{
+  "SpatialFullscreenVertex": {
+    "type": "vertex",
+    "file": "assets/shaders/fullscreen.vert"
+  },
+  "SpatialFsrEasuFragment": {
+    "type": "fragment",
+    "file": "assets/shaders/fsr_easu.frag"
+  },
+  "SpatialFsrRcasFragment": {
+    "type": "fragment",
+    "file": "assets/shaders/fsr_rcas.frag"
+  }
+}

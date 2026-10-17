@@ -13,8 +13,11 @@ final class GpuFrameRenderer {
   GpuFrameRenderer(
     this.context, {
     required Map<String, ShaderProgramSpec> programs,
-  }) : programSpecs = Map.unmodifiable(programs);
+    Iterable<ByteData> additionalShaderBundles = const [],
+  }) : programSpecs = Map.unmodifiable(programs),
+       additionalShaderBundles = List.unmodifiable(additionalShaderBundles);
   final Map<String, ShaderProgramSpec> programSpecs;
+  final List<ByteData> additionalShaderBundles;
   final gpu.GpuContext context;
   gpu.DeviceBuffer _copyBuffer(ByteData data) {
     final buffer = context.createDeviceBufferWithCopy(data);
@@ -126,15 +129,23 @@ final class GpuFrameRenderer {
   Future<void> installShaders(ByteData bundle) async {
     if (_disposed) throw StateError('gpu_renderer_disposed');
     final generation = _resourceGeneration;
-    final library = await gpu.ShaderLibrary.fromBytes(bundle);
-    if (_disposed || generation != _resourceGeneration)
-      throw StateError('gpu_shader_source_replaced');
-    if (library == null) throw StateError('gpu_shader_bundle_invalid');
+    final libraries = <gpu.ShaderLibrary>[];
+    for (final bytes in [bundle, ...additionalShaderBundles]) {
+      final library = await gpu.ShaderLibrary.fromBytes(bytes);
+      if (_disposed || generation != _resourceGeneration) {
+        throw StateError('gpu_shader_source_replaced');
+      }
+      if (library == null) throw StateError('gpu_shader_bundle_invalid');
+      libraries.add(library);
+    }
     final next = <String, (gpu.Shader, gpu.Shader)>{};
     for (final entry in programSpecs.entries) {
       final spec = entry.value;
-      final vertex = library[spec.vertexEntry];
-      final fragment = library[spec.fragmentEntry];
+      gpu.Shader? vertex, fragment;
+      for (final library in libraries) {
+        vertex ??= library[spec.vertexEntry];
+        fragment ??= library[spec.fragmentEntry];
+      }
       if (vertex == null || fragment == null) {
         if (spec.required)
           throw StateError('gpu_shader_program_missing:${entry.key}');

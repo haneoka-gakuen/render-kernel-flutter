@@ -1,0 +1,8 @@
+{
+  "package": "@haneoka/render-shaders",
+  "version": "0.1.0",
+  "canonicalSha256": "00d4244c214666ade67a8e98d5af61cf3ee04f945a71145ebe93f4b6d1142f0a",
+  "upstream": "GPUOpen-Effects/FidelityFX-FSR",
+  "tag": "v1.0.2",
+  "commit": "a21ffb8f6c13233ba336352bdff293894c706575"
+}
