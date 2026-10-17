@@ -202,6 +202,23 @@ class RenderSession {
     return operation;
   }
 
+  /// Producers can reinstall these keys with ensureTextures/ensureDataTextures.
+  Future<void> releaseTextures(Iterable<String> textures) {
+    if (_disposed || !_ready) throw StateError('gpu_session_not_ready');
+    final generation = _generation;
+    final requested = textures.toSet();
+    final operation = _active.then((_) {
+      if (_disposed || generation != _generation) return;
+      renderer.releaseTextures(requested);
+      for (final key in requested) {
+        _installedTextures.remove(key);
+        _installedDataTextures.remove(key);
+      }
+    });
+    _active = operation.catchError((Object _) {});
+    return operation;
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;

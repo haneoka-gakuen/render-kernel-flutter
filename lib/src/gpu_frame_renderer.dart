@@ -30,6 +30,7 @@ final class GpuFrameRenderer {
 
   final Map<String, (gpu.RenderPipeline, gpu.Shader, gpu.Shader)> _programs =
       {};
+  final Map<String, (gpu.Shader, gpu.Shader)> _shaders = {};
   final Map<(String, ShaderBindingStage, String), gpu.UniformSlot>
   _shaderSlots = {};
   final Map<(String, String), gpu.BufferView> _uniformBuffers = {};
@@ -43,6 +44,41 @@ final class GpuFrameRenderer {
   final Map<String, TextureDescriptor> _textureDescriptors = {};
   Map<String, TextureDescriptor> get textureDescriptors =>
       Map.unmodifiable(_textureDescriptors);
+  Map<String, Map<String, Object>> get textureResources => {
+    for (final entry in _textures.entries)
+      entry.key: {
+        'width': entry.value.width,
+        'height': entry.value.height,
+        'format': entry.value.format.name,
+        'mipLevels': entry.value.mipLevelCount,
+        'texelBytes': _textureTexelBytes(entry.value),
+        'target': _scene?.targets.containsKey(entry.key) ?? false,
+        'materialReferences':
+            _scene?.materials.values
+                .where((material) => material.textures.containsValue(entry.key))
+                .length ??
+            0,
+      },
+  };
+  Map<String, Map<String, Object>> get targetResources => {
+    for (final entry
+        in _scene?.targets.entries ?? const <MapEntry<String, RenderTarget>>[])
+      entry.key: {
+        'width': entry.value.width,
+        'height': entry.value.height,
+        'format': entry.value.format.name,
+        'presentable': entry.value.presentable,
+        'colourTexelBytes':
+            entry.value.width *
+            entry.value.height *
+            (entry.value.format == TargetFormat.rgba16f ? 8 : 4),
+        'depthTexelBytes': _depth[entry.key] == null
+            ? 0
+            : _textureTexelBytes(_depth[entry.key]!),
+        'surfaceBackingTextures':
+            _surfaces[entry.key]?.debugBackingTextureCount ?? 0,
+      },
+  };
   bool _inFlight = false;
   bool _disposed = false;
   int _resourceGeneration = 0;
@@ -92,7 +128,7 @@ final class GpuFrameRenderer {
     if (_disposed || generation != _resourceGeneration)
       throw StateError('gpu_shader_source_replaced');
     if (library == null) throw StateError('gpu_shader_bundle_invalid');
-    final next = <String, (gpu.RenderPipeline, gpu.Shader, gpu.Shader)>{};
+    final next = <String, (gpu.Shader, gpu.Shader)>{};
     for (final entry in programSpecs.entries) {
       final spec = entry.value;
       final vertex = library[spec.vertexEntry];
@@ -102,17 +138,14 @@ final class GpuFrameRenderer {
           throw StateError('gpu_shader_program_missing:${entry.key}');
         continue;
       }
-      next[entry.key] = (
-        context.createRenderPipeline(vertex, fragment),
-        vertex,
-        fragment,
-      );
+      next[entry.key] = (vertex, fragment);
     }
     if (_disposed || generation != _resourceGeneration)
       throw StateError('gpu_shader_source_replaced');
-    _programs
+    _shaders
       ..clear()
       ..addAll(next);
+    _programs.clear();
     _shaderSlots.clear();
   }
 
@@ -149,6 +182,27 @@ final class GpuFrameRenderer {
       height: height,
       alpha: TextureAlpha.straight,
     );
+  }
+
+  /// Retire source inputs after the producer has removed their material bindings.
+  void releaseTextures(Iterable<String> keys) {
+    if (_disposed) throw StateError('gpu_renderer_disposed');
+    if (_inFlight) throw StateError('gpu_frame_in_flight');
+    final requested = keys.toSet();
+    for (final key in requested) {
+      if ((_scene?.targets.containsKey(key) ?? false) ||
+          (_scene?.materials.values.any(
+                (material) => material.textures.containsValue(key),
+              ) ??
+              false)) {
+        throw StateError('gpu_texture_still_referenced:$key');
+      }
+    }
+    for (final key in requested) {
+      _textures.remove(key);
+      _textureDescriptors.remove(key);
+      _imageLeases.remove(key)?.dispose();
+    }
   }
 
   /// Lossless native texel upload through the official batched command API.
@@ -383,6 +437,8 @@ final class GpuFrameRenderer {
   }
 
   Map<String, int> get resourceCounts => {
+    'shaderProgramsAvailable': _shaders.length,
+    'shaderProgramsRegistered': _programs.length,
     'shaderSlots': _shaderSlots.length,
     'shaderSlotCreates': _shaderSlotCreates,
     'vertexUploads': _vertexUploads,
@@ -398,6 +454,14 @@ final class GpuFrameRenderer {
       (bytes, view) => bytes + view.buffer.sizeInBytes,
     ),
     'textures': _textures.length,
+    'textureTexelBytes': _textures.values.fold(
+      0,
+      (bytes, texture) => bytes + _textureTexelBytes(texture),
+    ),
+    'depthTexelBytes': _depth.values.fold(
+      0,
+      (bytes, texture) => bytes + _textureTexelBytes(texture),
+    ),
     'targets': _scene?.targets.length ?? 0,
     'targetAllocations': _targetAllocations,
     'targetReuses': _targetReuses,
@@ -406,6 +470,7 @@ final class GpuFrameRenderer {
       0,
       (count, surface) => count + surface.debugBackingTextureCount,
     ),
+    'surfaces': _surfaces.length,
     'vertexBytes': _meshes.values.fold(
       0,
       (n, mesh) => n + mesh.$1.lengthInBytes,
@@ -423,6 +488,14 @@ final class GpuFrameRenderer {
       (total, mesh) => total + mesh.$2.buffer.sizeInBytes,
     ),
   };
+
+  static int _textureTexelBytes(gpu.Texture texture) {
+    var bytes = 0;
+    for (var mip = 0; mip < texture.mipLevelCount; mip++) {
+      bytes += texture.getMipLevelSizeInBytes(mip);
+    }
+    return bytes * texture.sliceCount * texture.sampleCount;
+  }
 
   void clearResources() {
     ++_resourceGeneration;
@@ -601,7 +674,7 @@ final class GpuFrameRenderer {
     if (_disposed) throw StateError('gpu_renderer_disposed');
     final scene = _scene;
     if (_inFlight) throw StateError('gpu_frame_in_flight');
-    if (scene == null || _programs.isEmpty || frame.epoch != scene.epoch) {
+    if (scene == null || _shaders.isEmpty || frame.epoch != scene.epoch) {
       throw StateError('gpu_renderer_not_ready_or_epoch_mismatch');
     }
     if (frame.mediaMicroseconds < 0 ||
@@ -667,9 +740,17 @@ final class GpuFrameRenderer {
           if ((material.depthTest || material.depthWrite) && depth == null)
             throw StateError('gpu_draw_requires_depth');
           final definition = programSpecs[material.programId];
-          final program = _programs[material.programId];
-          if (definition == null || program == null)
+          final shaders = _shaders[material.programId];
+          if (definition == null || shaders == null)
             throw StateError('gpu_program_not_installed:${material.programId}');
+          final program = _programs.putIfAbsent(
+            material.programId,
+            () => (
+              context.createRenderPipeline(shaders.$1, shaders.$2),
+              shaders.$1,
+              shaders.$2,
+            ),
+          );
           if (scene.meshes[draw.mesh]!.strideFloats !=
               definition.vertexStrideFloats)
             throw StateError(
@@ -888,6 +969,7 @@ final class GpuFrameRenderer {
     }
     _imageLeases.clear();
     _programs.clear();
+    _shaders.clear();
     _shaderSlots.clear();
     _initializedTargets.clear();
     _meshes.clear();
