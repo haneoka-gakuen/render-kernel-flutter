@@ -694,13 +694,16 @@ final class GpuFrameRenderer {
     }
     _inFlight = true;
     gpu.GpuSurfaceFrame? surfaceFrame;
+    final submissions = <Future<void>>[];
     try {
-      final command = context.createCommandBuffer();
       final surface = _surfaces[frame.outputTarget];
       surfaceFrame = surface?.acquireNextFrame();
       final initialized = {..._initializedTargets};
       final writtenTargets = <String>{};
-      for (final spec in frame.passes) {
+      final stagedUniforms = <(String, String)>{};
+      for (var passIndex = 0; passIndex < frame.passes.length; passIndex++) {
+        final spec = frame.passes[passIndex];
+        final command = context.createCommandBuffer();
         final target = spec.target == frame.outputTarget && surfaceFrame != null
             ? surfaceFrame.colorTexture
             : _textures[spec.target];
@@ -785,19 +788,21 @@ final class GpuFrameRenderer {
               );
             final key = (draw.material, block.key);
             var uniform = _uniformBuffers[key];
-            if (uniform == null ||
-                uniform.lengthInBytes != floats.lengthInBytes) {
-              uniform = gpu.BufferView(
-                _copyBuffer(ByteData.sublistView(floats)),
-                offsetInBytes: 0,
-                lengthInBytes: floats.lengthInBytes,
-              );
-              _uniformBuffers[key] = uniform;
-            } else if (!_stageBuffer(
-              uniform.buffer,
-              ByteData.sublistView(floats),
-            )) {
-              throw StateError('gpu_uniform_upload:$key');
+            if (stagedUniforms.add(key)) {
+              if (uniform == null ||
+                  uniform.lengthInBytes != floats.lengthInBytes) {
+                uniform = gpu.BufferView(
+                  _copyBuffer(ByteData.sublistView(floats)),
+                  offsetInBytes: 0,
+                  lengthInBytes: floats.lengthInBytes,
+                );
+                _uniformBuffers[key] = uniform;
+              } else if (!_stageBuffer(
+                uniform.buffer,
+                ByteData.sublistView(floats),
+              )) {
+                throw StateError('gpu_uniform_upload:$key');
+              }
             }
             pass.bindUniform(
               _shaderSlot(
@@ -806,7 +811,7 @@ final class GpuFrameRenderer {
                     ShaderBindingStage.fragment,
                 block.key,
               ),
-              uniform,
+              uniform!,
             );
           }
           for (final slot in definition.textureSlots) {
@@ -935,22 +940,34 @@ final class GpuFrameRenderer {
         }
         initialized.add(spec.target);
         writtenTargets.add(spec.target);
+        // Vulkan begins recording at createRenderPass and ends at submit.
+        // Submit before the next pass begins; the queue preserves pass order.
+        final completion = Completer<void>();
+        submissions.add(completion.future);
+        try {
+          if (passIndex == frame.passes.length - 1) {
+            surfaceFrame?.present(command);
+          }
+          command.submit(
+            completionCallback: (bool ok) {
+              if (completion.isCompleted) return;
+              if (ok) {
+                completion.complete();
+              } else {
+                completion.completeError(StateError('gpu_submission_failed'));
+              }
+            },
+          );
+        } catch (error, stack) {
+          // A synchronous submission failure may not deliver its callback.
+          if (!completion.isCompleted) completion.completeError(error, stack);
+          rethrow;
+        }
       }
       if (!writtenTargets.contains(frame.outputTarget)) {
         throw StateError('gpu_output_not_rendered');
       }
-      final completion = Completer<void>();
-      surfaceFrame?.present(command);
-      command.submit(
-        completionCallback: (bool ok) {
-          if (ok) {
-            completion.complete();
-          } else {
-            completion.completeError(StateError('gpu_submission_failed'));
-          }
-        },
-      );
-      await completion.future;
+      await Future.wait(submissions);
       _initializedTargets
         ..clear()
         ..addAll(initialized);
@@ -961,6 +978,10 @@ final class GpuFrameRenderer {
       }
       return _textures[frame.outputTarget]!.asImage();
     } finally {
+      // A later pass can fail after earlier submissions started using inputs.
+      // Drain those reads before the caller may replace or dispose resources.
+      await Future.wait(submissions)
+          .then<void>((_) {}, onError: (Object _, StackTrace _) {});
       surfaceFrame?.discard();
       _inFlight = false;
     }
