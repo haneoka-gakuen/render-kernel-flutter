@@ -34,6 +34,8 @@ final class GpuFrameRenderer {
   final Map<(String, ShaderBindingStage, String), gpu.UniformSlot>
   _shaderSlots = {};
   final Map<(String, String), gpu.BufferView> _uniformBuffers = {};
+  final Map<(String, String), Uint32List> _uniformValues = {};
+  int _uniformUploads = 0, _uniformUploadSkips = 0;
   final Map<String, ui.Image> _imageLeases = {};
   RenderScene? _scene;
   final Map<String, (gpu.BufferView, gpu.BufferView, int)> _meshes = {};
@@ -441,6 +443,7 @@ final class GpuFrameRenderer {
     _uniformBuffers.removeWhere(
       (key, _) => !next.materials.containsKey(key.$1),
     );
+    _uniformValues.removeWhere((key, _) => !_uniformBuffers.containsKey(key));
     _scene = next;
   }
 
@@ -450,6 +453,8 @@ final class GpuFrameRenderer {
     'shaderSlots': _shaderSlots.length,
     'shaderSlotCreates': _shaderSlotCreates,
     'vertexUploads': _vertexUploads,
+    'uniformUploads': _uniformUploads,
+    'uniformUploadSkips': _uniformUploadSkips,
     'indexUploads': _indexUploads,
     'vertexUploadSkips': _vertexUploadSkips,
     'indexUploadSkips': _indexUploadSkips,
@@ -518,6 +523,7 @@ final class GpuFrameRenderer {
     _uploadedMeshes.clear();
     _shaderSlots.clear();
     _uniformBuffers.clear();
+    _uniformValues.clear();
     _textures.clear();
     _surfaces.clear();
     _textureDescriptors.clear();
@@ -669,6 +675,7 @@ final class GpuFrameRenderer {
     _uniformBuffers.removeWhere(
       (key, _) => !scene.materials.containsKey(key.$1),
     );
+    _uniformValues.removeWhere((key, _) => !_uniformBuffers.containsKey(key));
     _scene = scene;
   }
 
@@ -745,6 +752,12 @@ final class GpuFrameRenderer {
                   ),
           ),
         );
+        gpu.RenderPipeline? boundPipeline;
+        DrawCull? boundCull;
+        DrawBlend? boundBlend;
+        bool? boundDepthWrite;
+        bool? boundDepthTest;
+        pass.setWindingOrder(gpu.WindingOrder.counterClockwise);
         for (final draw in spec.draws) {
           final mesh = _meshes[draw.mesh];
           final material = scene.materials[draw.material];
@@ -771,13 +784,18 @@ final class GpuFrameRenderer {
               'gpu_vertex_layout_mismatch:${material.programId}',
             );
           pass.clearBindings();
-          pass.bindPipeline(program.$1);
-          pass.setCullMode(switch (material.cull) {
-            DrawCull.none => gpu.CullMode.none,
-            DrawCull.back => gpu.CullMode.backFace,
-            DrawCull.front => gpu.CullMode.frontFace,
-          });
-          pass.setWindingOrder(gpu.WindingOrder.counterClockwise);
+          if (!identical(boundPipeline, program.$1)) {
+            pass.bindPipeline(program.$1);
+            boundPipeline = program.$1;
+          }
+          if (boundCull != material.cull) {
+            pass.setCullMode(switch (material.cull) {
+              DrawCull.none => gpu.CullMode.none,
+              DrawCull.back => gpu.CullMode.backFace,
+              DrawCull.front => gpu.CullMode.frontFace,
+            });
+            boundCull = material.cull;
+          }
           pass.bindVertexBuffer(mesh.$1);
           pass.bindIndexBuffer(mesh.$2, gpu.IndexType.int16);
           for (final block in definition.uniformFloatCounts.entries) {
@@ -789,19 +807,37 @@ final class GpuFrameRenderer {
             final key = (draw.material, block.key);
             var uniform = _uniformBuffers[key];
             if (stagedUniforms.add(key)) {
-              if (uniform == null ||
-                  uniform.lengthInBytes != floats.lengthInBytes) {
-                uniform = gpu.BufferView(
-                  _copyBuffer(ByteData.sublistView(floats)),
-                  offsetInBytes: 0,
-                  lengthInBytes: floats.lengthInBytes,
+              final previous = _uniformValues[key];
+              if (uniform != null &&
+                  uniform.lengthInBytes == floats.lengthInBytes &&
+                  previous != null &&
+                  _sameBytes(previous, floats)) {
+                ++_uniformUploadSkips;
+              } else {
+                // Retain an owned byte snapshot. A caller may reuse or mutate
+                // its input array after this frame has finished.
+                _uniformValues.remove(key);
+                if (uniform == null ||
+                    uniform.lengthInBytes != floats.lengthInBytes) {
+                  uniform = gpu.BufferView(
+                    _copyBuffer(ByteData.sublistView(floats)),
+                    offsetInBytes: 0,
+                    lengthInBytes: floats.lengthInBytes,
+                  );
+                  _uniformBuffers[key] = uniform;
+                } else if (!_stageBuffer(
+                  uniform.buffer,
+                  ByteData.sublistView(floats),
+                )) {
+                  throw StateError('gpu_uniform_upload:$key');
+                }
+                _uniformValues[key] = Uint32List.fromList(
+                  floats.buffer.asUint32List(
+                    floats.offsetInBytes,
+                    floats.length,
+                  ),
                 );
-                _uniformBuffers[key] = uniform;
-              } else if (!_stageBuffer(
-                uniform.buffer,
-                ByteData.sublistView(floats),
-              )) {
-                throw StateError('gpu_uniform_upload:$key');
+                ++_uniformUploads;
               }
             }
             pass.bindUniform(
@@ -866,7 +902,6 @@ final class GpuFrameRenderer {
               ),
             );
           }
-          pass.setColorBlendEnable(material.blend != DrawBlend.opaque);
           final (
             sourceColor,
             destinationColor,
@@ -922,20 +957,30 @@ final class GpuFrameRenderer {
               gpu.BlendFactor.oneMinusSourceAlpha,
             ),
           };
-          pass.setColorBlendEquation(
-            gpu.ColorBlendEquation(
-              sourceColorBlendFactor: sourceColor,
-              destinationColorBlendFactor: destinationColor,
-              sourceAlphaBlendFactor: sourceAlpha,
-              destinationAlphaBlendFactor: destinationAlpha,
-            ),
-          );
-          pass.setDepthWriteEnable(material.depthWrite);
-          pass.setDepthCompareOperation(
-            material.depthTest
-                ? gpu.CompareFunction.lessEqual
-                : gpu.CompareFunction.always,
-          );
+          if (boundBlend != material.blend) {
+            pass.setColorBlendEnable(material.blend != DrawBlend.opaque);
+            pass.setColorBlendEquation(
+              gpu.ColorBlendEquation(
+                sourceColorBlendFactor: sourceColor,
+                destinationColorBlendFactor: destinationColor,
+                sourceAlphaBlendFactor: sourceAlpha,
+                destinationAlphaBlendFactor: destinationAlpha,
+              ),
+            );
+            boundBlend = material.blend;
+          }
+          if (boundDepthWrite != material.depthWrite) {
+            pass.setDepthWriteEnable(material.depthWrite);
+            boundDepthWrite = material.depthWrite;
+          }
+          if (boundDepthTest != material.depthTest) {
+            pass.setDepthCompareOperation(
+              material.depthTest
+                  ? gpu.CompareFunction.lessEqual
+                  : gpu.CompareFunction.always,
+            );
+            boundDepthTest = material.depthTest;
+          }
           pass.drawIndexed(mesh.$3);
         }
         initialized.add(spec.target);
@@ -996,6 +1041,7 @@ final class GpuFrameRenderer {
     _scene = null;
     _surfaces.clear();
     _uniformBuffers.clear();
+    _uniformValues.clear();
     for (final image in _imageLeases.values) {
       image.dispose();
     }
