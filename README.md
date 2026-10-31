@@ -1,7 +1,21 @@
 # Flutter render kernel
 
-Shared Flutter GPU submission and frame lifecycle for independent renderers. The kernel loads textures, submits resource-driven render graphs and releases frame resources. It accepts numeric drawing contracts and has no application or game dependency.
+Shared Flutter GPU submission and frame lifecycle for independent renderers. It loads textures, submits resource-driven render graphs and releases frame resources, and it holds no game or application logic.
 
-`packages/render_contracts` contains the pure Dart geometry, matrices, view-facing lines and render graph contracts. It has no Flutter dependency. Vega and Cassiopeia select their own scene and chart compilers above this layer.
+| Path | Contents |
+| --- | --- |
+| `lib` | GPU kernel, used by the Vega and Cassiopeia renderers |
+| `packages/render_contracts` | Pure Dart geometry, matrices and render graph contracts, with no Flutter dependency |
+| [SPATIAL-UPSCALING.md](SPATIAL-UPSCALING.md) | Optional FSR 1 upscaling |
 
-Run `flutter pub get` and `flutter analyze` from the repository root. Run `dart analyze` in `packages/render_contracts` to check the portable contracts.
+## Development
+
+```sh
+flutter pub get
+flutter analyze
+cd packages/render_contracts && dart analyze
+```
+
+## License
+
+[MPL-2.0](LICENSE). FidelityFX FSR terms are in [LICENSE-FidelityFX-FSR.txt](LICENSE-FidelityFX-FSR.txt).
